@@ -52,10 +52,13 @@ func (r *route) parseChain() (*gost.Chain, error) {
 		ngroup.AddNode(nodes...)
 
 		ngroup.SetSelector(nil,
-			gost.WithFilter(&gost.FailFilter{
-				MaxFails:    defaultMaxFails,
-				FailTimeout: defaultFailTimeout,
-			}),
+			gost.WithFilter(
+				&gost.FailFilter{
+					MaxFails:    nodes[0].GetInt("max_fails"),
+					FailTimeout: nodes[0].GetDuration("fail_timeout"),
+				},
+				&gost.InvalidFilter{},
+			),
 			gost.WithStrategy(gost.NewStrategy(nodes[0].Get("strategy"))),
 		)
 
@@ -205,6 +208,10 @@ func parseChainNode(ns string) (nodes []gost.Node, err error) {
 	node.DialOptions = append(node.DialOptions,
 		gost.TimeoutDialOption(time.Duration(timeout)*time.Second),
 	)
+
+	node.ConnectOptions = []gost.ConnectOption{
+		gost.UserAgentConnectOption(node.Get("agent")),
+	}
 
 	if host == "" {
 		host = node.Host
@@ -432,6 +439,8 @@ func (r *route) GenRouters() ([]router, error) {
 			gost.WhitelistHandlerOption(whitelist),
 			gost.BlacklistHandlerOption(blacklist),
 			gost.StrategyHandlerOption(gost.NewStrategy(node.Get("strategy"))),
+			gost.MaxFailsHandlerOption(node.GetInt("max_fails")),
+			gost.FailTimeoutHandlerOption(node.GetDuration("fail_timeout")),
 			gost.BypassHandlerOption(node.Bypass),
 			gost.ResolverHandlerOption(resolver),
 			gost.HostsHandlerOption(hosts),
