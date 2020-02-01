@@ -67,7 +67,7 @@ func (c *KCPConfig) Init() {
 var (
 	// DefaultKCPConfig is the default KCP config.
 	DefaultKCPConfig = KCPConfig{
-		Key:          "it's a secrect",
+		Key:          "it's a secrect!",
 		Crypt:        "aes",
 		Mode:         "fast",
 		MTU:          1350,
