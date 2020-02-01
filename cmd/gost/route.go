@@ -3,8 +3,10 @@ package main
 import (
 	"crypto/sha256"
 	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -90,13 +92,29 @@ func parseChainNode(ns string) (nodes []gost.Node, err error) {
 		return
 	}
 
-	users, err := parseUsers(node.Get("secrets"))
-	if err != nil {
-		return
+	if auth := node.Get("auth"); auth != "" && node.User == nil {
+		c, err := base64.StdEncoding.DecodeString(auth)
+		if err != nil {
+			return nil, err
+		}
+		cs := string(c)
+		s := strings.IndexByte(cs, ':')
+		if s < 0 {
+			node.User = url.User(cs)
+		} else {
+			node.User = url.UserPassword(cs[:s], cs[s+1:])
+		}
 	}
-	if node.User == nil && len(users) > 0 {
-		node.User = users[0]
+	if node.User == nil {
+		users, err := parseUsers(node.Get("secrets"))
+		if err != nil {
+			return nil, err
+		}
+		if len(users) > 0 {
+			node.User = users[0]
+		}
 	}
+
 	serverName, sport, _ := net.SplitHostPort(node.Addr)
 	if serverName == "" {
 		serverName = "localhost" // default server name
@@ -139,6 +157,13 @@ func parseChainNode(ns string) (nodes []gost.Node, err error) {
 		if err != nil {
 			return nil, err
 		}
+		if config == nil {
+			conf := gost.DefaultKCPConfig
+			if node.GetBool("tcp") {
+				conf.TCP = true
+			}
+			config = &conf
+		}
 		tr = gost.KCPTransporter(config)
 	case "ssh":
 		if node.Protocol == "direct" || node.Protocol == "remote" {
@@ -171,6 +196,8 @@ func parseChainNode(ns string) (nodes []gost.Node, err error) {
 	case "ohttp":
 		host = node.Get("host")
 		tr = gost.ObfsHTTPTransporter()
+	case "ftcp":
+		tr = gost.FakeTCPTransporter()
 	default:
 		tr = gost.TCPTransporter()
 	}
@@ -211,6 +238,7 @@ func parseChainNode(ns string) (nodes []gost.Node, err error) {
 
 	node.ConnectOptions = []gost.ConnectOption{
 		gost.UserAgentConnectOption(node.Get("agent")),
+		gost.NoTLSConnectOption(node.GetBool("notls")),
 	}
 
 	if host == "" {
@@ -270,6 +298,20 @@ func (r *route) GenRouters() ([]router, error) {
 		if err != nil {
 			return nil, err
 		}
+
+		if auth := node.Get("auth"); auth != "" && node.User == nil {
+			c, err := base64.StdEncoding.DecodeString(auth)
+			if err != nil {
+				return nil, err
+			}
+			cs := string(c)
+			s := strings.IndexByte(cs, ':')
+			if s < 0 {
+				node.User = url.User(cs)
+			} else {
+				node.User = url.UserPassword(cs[:s], cs[s+1:])
+			}
+		}
 		authenticator, err := parseAuthenticator(node.Get("secrets"))
 		if err != nil {
 			return nil, err
@@ -301,6 +343,14 @@ func (r *route) GenRouters() ([]router, error) {
 			ttl = time.Duration(node.GetInt("ttl")) * time.Second
 		}
 
+		tunRoutes := parseIPRoutes(node.Get("route"))
+		gw := net.ParseIP(node.Get("gw")) // default gateway
+		for i := range tunRoutes {
+			if tunRoutes[i].Gateway == nil {
+				tunRoutes[i].Gateway = gw
+			}
+		}
+
 		var ln gost.Listener
 		switch node.Transport {
 		case "tls":
@@ -319,6 +369,13 @@ func (r *route) GenRouters() ([]router, error) {
 			config, er := parseKCPConfig(node.Get("c"))
 			if er != nil {
 				return nil, er
+			}
+			if config == nil {
+				conf := gost.DefaultKCPConfig
+				if node.GetBool("tcp") {
+					conf.TCP = true
+				}
+				config = &conf
 			}
 			ln, err = gost.KCPListener(node.Addr, config)
 		case "ssh":
@@ -398,7 +455,7 @@ func (r *route) GenRouters() ([]router, error) {
 				Name:    node.Get("name"),
 				Addr:    node.Get("net"),
 				MTU:     node.GetInt("mtu"),
-				Routes:  strings.Split(node.Get("route"), ","),
+				Routes:  tunRoutes,
 				Gateway: node.Get("gw"),
 			}
 			ln, err = gost.TunListener(cfg)
@@ -411,6 +468,15 @@ func (r *route) GenRouters() ([]router, error) {
 				Gateway: node.Get("gw"),
 			}
 			ln, err = gost.TapListener(cfg)
+		case "ftcp":
+			ln, err = gost.FakeTCPListener(
+				node.Addr,
+				&gost.FakeTCPListenConfig{
+					TTL:       ttl,
+					Backlog:   node.GetInt("backlog"),
+					QueueSize: node.GetInt("queue"),
+				},
+			)
 		default:
 			ln, err = gost.TCPListener(node.Addr)
 		}
@@ -499,6 +565,7 @@ func (r *route) GenRouters() ([]router, error) {
 			gost.NodeHandlerOption(node),
 			gost.IPsHandlerOption(ips),
 			gost.TCPModeHandlerOption(node.GetBool("tcp")),
+			gost.IPRoutesHandlerOption(tunRoutes...),
 		)
 
 		rt := router{
